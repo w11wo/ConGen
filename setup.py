@@ -4,7 +4,6 @@ with open("README.md", mode="r", encoding="utf-8") as readme_file:
     readme = readme_file.read()
 
 
-
 setup(
     name="congen-sbert",
     version="1.0.0",
@@ -15,8 +14,8 @@ setup(
     long_description_content_type="text/markdown",
     packages=find_packages(),
     install_requires=[
-        "torch==1.8.1",
-        "transformers==4.9.0",
-        "sentence-transformers==2.0.0",
+        "torch>=1.8.1",
+        "transformers>=4.9.0",
+        "sentence-transformers>=2.0.0",
     ],
 )
