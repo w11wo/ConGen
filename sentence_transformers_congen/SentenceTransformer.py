@@ -1,7 +1,7 @@
 # This code modified from https://github.com/UKPLab/sentence-transformers/blob/master/sentence_transformers/SentenceTransformer.py 
 
 import json
-import logging 
+import logging
 import os
 import shutil
 import stat
@@ -23,24 +23,31 @@ import queue
 import tempfile
 from distutils.dir_util import copy_tree
 
+from . import __MODEL_HUB_ORGANIZATION__
 from .evaluation import SentenceEvaluator
 from .util import import_from_string, batch_to_device, fullname, snapshot_download
 from .models import Transformer, Pooling, Dense
 from .model_card_templates import ModelCardTemplate
 from . import __version__
-# from sentence_transformers import losses
 
 logger = logging.getLogger(__name__)
 
-class SentenceTransformer(nn.Sequential):    
+class SentenceTransformer(nn.Sequential):
     """
     Loads or create a SentenceTransformer model, that can be used to map sentences / text to embeddings.
+
     :param model_name_or_path: If it is a filepath on disc, it loads the model from that path. If it is not a path, it first tries to download a pre-trained SentenceTransformer model. If that fails, tries to construct a model from Huggingface models repository with that name.
     :param modules: This parameter can be used to create custom SentenceTransformer models from scratch.
     :param device: Device (like 'cuda' / 'cpu') that should be used for computation. If None, checks if a GPU can be used.
-    :param cache_folder: Path to store models
+    :param cache_folder: Path to store models. Can be also set by SENTENCE_TRANSFORMERS_HOME enviroment variable.
+    :param use_auth_token: HuggingFace authentication token to download private models.
     """
-    def __init__(self, model_name_or_path: Optional[str] = None, modules: Optional[Iterable[nn.Module]] = None, device: Optional[str] = None, cache_folder: Optional[str] = None):
+    def __init__(self, model_name_or_path: Optional[str] = None,
+                 modules: Optional[Iterable[nn.Module]] = None,
+                 device: Optional[str] = None,
+                 cache_folder: Optional[str] = None,
+                 use_auth_token: Union[bool, str, None] = None
+                 ):
         self._model_card_vars = {}
         self._model_card_text = None
         self._model_config = {}
@@ -76,13 +83,15 @@ class SentenceTransformer(nn.Sequential):
                     model_name_or_path = __MODEL_HUB_ORGANIZATION__ + "/" + model_name_or_path
 
                 model_path = os.path.join(cache_folder, model_name_or_path.replace("/", "_"))
-
-                # Download from hub with caching
-                snapshot_download(model_name_or_path,
-                                    cache_dir=cache_folder,
-                                    library_name='sentence-transformers',
-                                    library_version=__version__,
-                                    ignore_files=['flax_model.msgpack', 'rust_model.ot', 'tf_model.h5'])
+                
+                if not os.path.exists(os.path.join(model_path, 'modules.json')):
+                    # Download from hub with caching
+                    snapshot_download(model_name_or_path,
+                                        cache_dir=cache_folder,
+                                        library_name='sentence-transformers',
+                                        library_version=__version__,
+                                        ignore_files=['flax_model.msgpack', 'rust_model.ot', 'tf_model.h5'],
+                                        use_auth_token=use_auth_token)
 
             if os.path.exists(os.path.join(model_path, 'modules.json')):    #Load as SentenceTransformer model
                 modules = self._load_sbert_model(model_path)
@@ -111,6 +120,7 @@ class SentenceTransformer(nn.Sequential):
                normalize_embeddings: bool = False) -> Union[List[Tensor], ndarray, Tensor]:
         """
         Computes sentence embeddings
+
         :param sentences: the sentences to embed
         :param batch_size: the batch size used for the computation
         :param show_progress_bar: Output a progress bar when encode sentences
@@ -119,6 +129,7 @@ class SentenceTransformer(nn.Sequential):
         :param convert_to_tensor: If true, you get one large tensor as return. Overwrites any setting from convert_to_numpy
         :param device: Which torch.device to use for the computation
         :param normalize_embeddings: If set to true, returned vectors will have length 1. In that case, the faster dot-product (util.dot_score) instead of cosine similarity can be used.
+
         :return:
            By default, a list of tensors is returned. If convert_to_tensor, a stacked tensor is returned. If convert_to_numpy, a numpy matrix is returned.
         """
@@ -199,6 +210,7 @@ class SentenceTransformer(nn.Sequential):
         Starts multi process to process the encoding with several, independent processes.
         This method is recommended if you want to encode on multiple GPUs. It is advised
         to start only one process per GPU. This method works together with encode_multi_process
+
         :param target_devices: PyTorch target devices, e.g. cuda:0, cuda:1... If None, all available CUDA devices will be used
         :return: Returns a dict with the target processes, an input queue and and output queue.
         """
@@ -245,6 +257,7 @@ class SentenceTransformer(nn.Sequential):
         This method allows to run encode() on multiple GPUs. The sentences are chunked into smaller packages
         and sent to individual processes, which encode these on the different GPUs. This method is only suitable
         for encoding large sets of sentences
+
         :param sentences: List of sentences
         :param pool: A pool of workers started with SentenceTransformer.start_multi_process_pool
         :param batch_size: Encode sentences with batch size
@@ -255,7 +268,7 @@ class SentenceTransformer(nn.Sequential):
         if chunk_size is None:
             chunk_size = min(math.ceil(len(sentences) / len(pool["processes"]) / 10), 5000)
 
-        logger.info("Chunk data into packages of size {}".format(chunk_size))
+        logger.debug(f"Chunk data into {math.ceil(len(sentences) / chunk_size)} packages of size {chunk_size}")
 
         input_queue = pool['input']
         last_chunk_id = 0
@@ -325,12 +338,13 @@ class SentenceTransformer(nn.Sequential):
         """Returns the last module of this sequential embedder"""
         return self._modules[next(reversed(self._modules))]
 
-    def save(self, path: str, model_name: Optional[str] = None, create_model_card: bool = True):
+    def save(self, path: str, model_name: Optional[str] = None, create_model_card: bool = True, train_datasets: Optional[List[str]] = None):
         """
         Saves all elements for this seq. sentence embedder into different sub-folders
         :param path: Path on disc
         :param model_name: Optional model name
         :param create_model_card: If True, create a README.md with basic information about this model
+        :param train_datasets: Optional list with the names of the datasets used to to train the model
         """
         if path is None:
             return
@@ -368,9 +382,9 @@ class SentenceTransformer(nn.Sequential):
 
         # Create model card
         if create_model_card:
-            self._create_model_card(path, model_name)
+            self._create_model_card(path, model_name, train_datasets)
 
-    def _create_model_card(self, path: str, model_name: Optional[str] = None):
+    def _create_model_card(self, path: str, model_name: Optional[str] = None, train_datasets: Optional[List[str]] = None):
         """
         Create an automatic model and stores it in path
         """
@@ -393,6 +407,12 @@ class SentenceTransformer(nn.Sequential):
 
             # Add tags
             model_card = model_card.replace("{TAGS}", "\n".join(["- "+t for t in tags]))
+
+            datasets_str = ""
+            if train_datasets is not None:
+                datasets_str = "datasets:\n"+"\n".join(["- " + d for d in train_datasets])
+            model_card = model_card.replace("{DATASETS}", datasets_str)
+
 
             # Add dim info
             self._model_card_vars["{NUM_DIMENSIONS}"] = self.get_sentence_embedding_dimension()
@@ -418,9 +438,11 @@ class SentenceTransformer(nn.Sequential):
                     commit_message: str = "Add new SentenceTransformer model.",
                     local_model_path: Optional[str] = None,
                     exist_ok: bool = False,
-                    replace_model_card: bool = False):
+                    replace_model_card: bool = False,
+                    train_datasets: Optional[List[str]] = None):
         """
         Uploads all elements of this Sentence Transformer to a new HuggingFace Hub repository.
+
         :param repo_name: Repository name for your model in the Hub.
         :param organization:  Organization in which you want to push your model or tokenizer (you must be a member of this organization).
         :param private: Set to true, for hosting a prive model
@@ -428,6 +450,7 @@ class SentenceTransformer(nn.Sequential):
         :param local_model_path: Path of the model locally. If set, this file path will be uploaded. Otherwise, the current model will be uploaded
         :param exist_ok: If true, saving to an existing repository is OK. If false, saving only to a new repository is possible
         :param replace_model_card: If true, replace an existing model card in the hub with the automatically created model card
+        :param train_datasets: Datasets used to train the model. If set, the datasets will be added to the model card in the Hub.
         :return: The url of the commit of your model in the given repository.
         """
         token = HfFolder.get_token()
@@ -443,10 +466,12 @@ class SentenceTransformer(nn.Sequential):
                 raise ValueError("You passed and invalid repository name: {}.".format(repo_name))
 
         endpoint = "https://huggingface.co"
+        repo_id = repo_name
+        if organization:
+          repo_id = f"{organization}/{repo_id}"
         repo_url = HfApi(endpoint=endpoint).create_repo(
-                token,
-                repo_name,
-                organization=organization,
+                repo_id=repo_id,
+                token=token,
                 private=private,
                 repo_type=None,
                 exist_ok=exist_ok,
@@ -455,7 +480,7 @@ class SentenceTransformer(nn.Sequential):
 
         with tempfile.TemporaryDirectory() as tmp_dir:
             # First create the repo (and clone its content if it's nonempty).
-            logging.info("Create repository and clone it if it exists")
+            logger.info("Create repository and clone it if it exists")
             repo = Repository(tmp_dir, clone_from=repo_url)
 
             # If user provides local files, copy them.
@@ -463,7 +488,7 @@ class SentenceTransformer(nn.Sequential):
                 copy_tree(local_model_path, tmp_dir)
             else:  # Else, save model directly into local repo.
                 create_model_card = replace_model_card or not os.path.exists(os.path.join(tmp_dir, 'README.md'))
-                self.save(tmp_dir, model_name=full_model_name, create_model_card=create_model_card)
+                self.save(tmp_dir, model_name=full_model_name, create_model_card=create_model_card, train_datasets=train_datasets)
 
             #Find files larger 5M and track with git-lfs
             large_files = []
@@ -476,10 +501,10 @@ class SentenceTransformer(nn.Sequential):
                         large_files.append(rel_path)
 
             if len(large_files) > 0:
-                logging.info("Track files with git lfs: {}".format(", ".join(large_files)))
+                logger.info("Track files with git lfs: {}".format(", ".join(large_files)))
                 repo.lfs_track(large_files)
 
-            logging.info("Push model to the hub. This might take a while")
+            logger.info("Push model to the hub. This might take a while")
             push_return = repo.push_to_hub(commit_message=commit_message)
 
             def on_rm_error(func, path, exc_info):
@@ -497,7 +522,7 @@ class SentenceTransformer(nn.Sequential):
                 for f in os.listdir(tmp_dir):
                     shutil.rmtree(os.path.join(tmp_dir, f), onerror=on_rm_error)
             except Exception as e:
-                logging.warning("Error when deleting temp folder: {}".format(str(e)))
+                logger.warning("Error when deleting temp folder: {}".format(str(e)))
                 pass
 
 
@@ -507,6 +532,7 @@ class SentenceTransformer(nn.Sequential):
         """
         Transforms a batch from a SmartBatchingDataset to a batch of tensors for the model
         Here, batch is a list of tuples: [(tokens, label), ...]
+
         :param batch:
             a batch from a SmartBatchingDataset
         :return:
@@ -574,7 +600,7 @@ class SentenceTransformer(nn.Sequential):
             steps_per_epoch = None,
             scheduler: str = 'WarmupLinear',
             warmup_steps: int = 10000,
-            optimizer_class: Type[Optimizer] = transformers.AdamW,
+            optimizer_class: Type[Optimizer] = torch.optim.AdamW,
             optimizer_params : Dict[str, object]= {'lr': 2e-5},
             weight_decay: float = 0.01,
             evaluation_steps: int = 0,
@@ -594,6 +620,7 @@ class SentenceTransformer(nn.Sequential):
         Each training objective is sampled in turn for one batch.
         We sample only as many batches from each objective as there are in the smallest one
         to make sure of equal training with each dataset.
+
         :param train_objectives: Tuples of (DataLoader, LossFunction). Pass more than one for multi-task learning
         :param evaluator: An evaluator (sentence_transformers.evaluation) evaluates the model performance during training on held-out dev data. It is used to determine the best model that is saved to disc.
         :param epochs: Number of epochs for training
@@ -636,11 +663,11 @@ class SentenceTransformer(nn.Sequential):
         self.to(self._target_device)
 
         dataloaders = [dataloader for dataloader, _ in train_objectives]
-        
+
         # Use smart batching
         for dataloader in dataloaders:
             dataloader.collate_fn = self.smart_batching_collate
-        
+
         loss_models = [loss for _, loss in train_objectives]
         for loss_model in loss_models:
             loss_model.to(self._target_device)
@@ -674,7 +701,7 @@ class SentenceTransformer(nn.Sequential):
 
         global_step = 0
         data_iterators = [iter(dataloader) for dataloader in dataloaders]
-        
+
         num_train_objectives = len(train_objectives)
 
         skip_scheduler = False
@@ -686,15 +713,14 @@ class SentenceTransformer(nn.Sequential):
             for loss_model in loss_models:
                 loss_model.zero_grad()
                 loss_model.train()
-            
-            for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
 
+            for _ in trange(steps_per_epoch, desc="Iteration", smoothing=0.05, disable=not show_progress_bar):
                 for train_idx in range(num_train_objectives):
                     loss_model = loss_models[train_idx]
                     optimizer = optimizers[train_idx]
                     scheduler = schedulers[train_idx]
                     data_iterator = data_iterators[train_idx]
-                    
+
                     try:
                         data = next(data_iterator)
                     except StopIteration:
@@ -732,12 +758,12 @@ class SentenceTransformer(nn.Sequential):
                         loss_value.backward()
                         torch.nn.utils.clip_grad_norm_(loss_model.parameters(), max_grad_norm)
                         optimizer.step()
-                      
+
                     optimizer.zero_grad()
 
                     if not skip_scheduler:
                         scheduler.step()
-                
+
                 training_steps += 1
                 global_step += 1
 
@@ -761,9 +787,11 @@ class SentenceTransformer(nn.Sequential):
             self._save_checkpoint(checkpoint_path, checkpoint_save_total_limit, global_step)
 
 
+
     def evaluate(self, evaluator: SentenceEvaluator, output_path: str = None):
         """
         Evaluate the model
+
         :param evaluator:
             the evaluator
         :param output_path:
@@ -820,7 +848,7 @@ class SentenceTransformer(nn.Sequential):
         """
         Creates a simple Transformer + Mean Pooling model and returns the modules
         """
-        logging.warning("No sentence-transformers model found with name {}. Creating a new one with MEAN pooling.".format(model_name_or_path))
+        logger.warning("No sentence-transformers model found with name {}. Creating a new one with MEAN pooling.".format(model_name_or_path))
         transformer_model = Transformer(model_name_or_path)
         pooling_model = Pooling(transformer_model.get_word_embedding_dimension(), 'mean')
         return [transformer_model, pooling_model]
@@ -860,7 +888,9 @@ class SentenceTransformer(nn.Sequential):
 
         return modules
 
-
+    @staticmethod
+    def load(input_path):
+        return SentenceTransformer(input_path)
 
     @staticmethod
     def _get_scheduler(optimizer, scheduler: str, warmup_steps: int, t_total: int):
@@ -909,7 +939,7 @@ class SentenceTransformer(nn.Sequential):
     @tokenizer.setter
     def tokenizer(self, value):
         """
-        Property to set the tokenizer that is should used by this model
+        Property to set the tokenizer that should be used by this model
         """
         self._first_module().tokenizer = value
 
